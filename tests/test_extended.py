@@ -21,6 +21,23 @@ class Helpers(unittest.TestCase):
     def approve(self,a):self.op('/api/approval/decide',id=a,status='已批准',decision='TEST 核查确切内容与授权')
 
 class Extended(Helpers):
+    def test_automatic_start_needs_no_startup_acceptance_or_dispatch_click(self):
+        p=s.mutate(self.c,'/api/projects',{'idea':'TEST 一句话自动启动','quick_start':True})['id'];self.c.commit()
+        self.assertEqual(business.flow(self.c,p)['autopilot'],1)
+        attempt=engine.claim();self.assertIsNotNone(attempt);engine.execute(attempt)
+        self.assertEqual(self.c.execute('SELECT status FROM tasks WHERE project=? AND dependency IS NULL',(p,)).fetchone()[0],'已完成')
+        director.automate();director.dispatch_research()
+        self.assertEqual(self.c.execute('SELECT status FROM jobs WHERE project=?',(p,)).fetchone()[0],'排队中')
+        self.assertEqual(self.c.execute('SELECT COUNT(*) FROM tool_grants WHERE project=?',(p,)).fetchone()[0],2)
+        director.automate();director.dispatch_research()
+        self.assertEqual(self.c.execute('SELECT COUNT(*) FROM jobs WHERE project=?',(p,)).fetchone()[0],1)
+    def test_automation_does_not_invent_model_or_reauthorize_revoked_calls(self):
+        p=s.mutate(self.c,'/api/projects',{'idea':'TEST 没有模型','quick_start':True})['id'];self.c.commit()
+        with patch('engine.model_status',return_value={'configured':False}):director.automate()
+        self.assertFalse(self.c.execute('SELECT 1 FROM grants WHERE project=?',(p,)).fetchone())
+        self.c.execute('INSERT INTO grants VALUES(?,0)',(p,));self.c.commit()
+        with patch('engine.model_status',return_value={'configured':True}):director.automate()
+        self.assertEqual(self.c.execute('SELECT remaining FROM grants WHERE project=?',(p,)).fetchone()[0],0)
     def test_private_sources_and_redirects_not_permitted(self):
         for url in ['http://example.com','https://user:pass@example.com','https://example.com:8080']:
             with self.assertRaises(ValueError):net.public_url(url)

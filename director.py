@@ -9,11 +9,14 @@ def guidance(c,p):
     if f['status']!='进行中':return {'title':'项目已'+f['status'],'action':'resume','explanation':'先处理风险或恢复项目，再继续派工','questions':[]}
     root=c.execute("SELECT * FROM tasks WHERE project=? AND role=? AND dependency IS NULL AND title LIKE '确认%' ORDER BY id LIMIT 1",(p,s.ROLES[0])).fetchone()
     if root and root['status']=='进行中':return {'title':'正在整理你的项目启动卡','action':'wait','explanation':'先明确本次目标与权限，不要求现在补齐所有条件','questions':[]}
-    if root and root['status']=='待验收':return {'title':'启动卡已整理好，请先查看并确认','action':'startup','task':root['id'],'explanation':'确认记录正确后，中台继续探索；未知条件仍保留待确认','questions':[]}
+    if root and root['status']=='待验收' and not f['autopilot']:return {'title':'启动卡已整理好，请先查看并确认','action':'startup','task':root['id'],'explanation':'确认记录正确后，中台继续探索；未知条件仍保留待确认','questions':[]}
     if root and root['status'] in {'待处理','需返工'}:return {'title':'先整理项目启动卡','action':'start_task','task':root['id'],'explanation':'中台先整理你的表达与未知条件，再开展探索','questions':[]}
     running=c.execute("SELECT 1 FROM jobs WHERE project=? AND status IN ('排队中','执行中')",(p,)).fetchone()
     if running:return {'title':'中台正在执行，请稍等','action':'wait','explanation':'执行结果、来源和缺口会保存在工作记录中','questions':[]}
     if facts.get('entry')=='operate' and not c.execute("SELECT 1 FROM connectors WHERE project=? AND status IN ('可读取','可执行','部分可用')",(p,)).fetchone() and not c.execute('SELECT 1 FROM stores WHERE project=?',(p,)).fetchone():return {'title':'先读取你的现有站点','action':'connect','explanation':'在知识与连接验证站点权限，读取商品与订单后再诊断；也可以使用内置商店','questions':[]}
+    if f['autopilot'] and root and root['status']=='已完成':
+        problem=automation_blocker(c,p)
+        if problem:return {'title':'自动执行遇到阻塞','action':'blocked','explanation':problem,'questions':[]}
     if f['stage']=='探索' and not any(x['value'].get('decision')=='确认验证' for x in opportunities):
         return {'title':'先寻找值得验证的方向','action':'choose' if opportunities else 'analyze' if c.execute("SELECT 1 FROM records WHERE project=? AND kind IN ('机会证据','导入文档')",(p,)).fetchone() else 'research','explanation':'先给你少量有来源的候选方向，再由你选择；不需要先有商品或站点','questions':unknown[:3]}
     if not products:return {'title':'把选定方向变成商品验证计划','action':'plan','explanation':'中台安排商品、供应、样品与成本核查；未知规格不会自动编成事实','questions':[]}
@@ -52,7 +55,7 @@ def mutate(c,path,d):
         row=c.execute("SELECT * FROM entities WHERE id=? AND project=? AND kind='opportunity'",(d.get('id'),p)).fetchone()
         if not row:raise ValueError('方向不存在')
         v=json.loads(row['data']);v['decision']='确认验证'
-        business.mutate(c,'/api/entities',{'project':p,'kind':'opportunity','id':row['id'],'version':row['version'],'value':v,'reason':'用户选择本轮验证方向'})
+        business.mutate(c,'/api/entities',{'project':p,'kind':'opportunity','id':row['id'],'version':row['version'],'value':v,'reason':d.get('reason','用户选择本轮验证方向')})
         # A direction decision changes the draft, but it must not silently approve stage or spend.
         if any(x['value'].get('status')!='已处理' for x in business.rows(c,p,'risk')):raise ValueError('请先处理现有风险，不能通过选择方向恢复项目')
         business.put_flow(c,p,status='进行中')
@@ -133,10 +136,66 @@ def dispatch_research():
             p=project['id'];g=guidance(c,p)
             if g['action'] not in {'research','analyze'}:continue
             grant=c.execute('SELECT remaining FROM grants WHERE project=?',(p,)).fetchone()
-            if not grant or not grant['remaining']:continue
-            import engine
-            if not engine.model_status(p,c)['configured']:continue
+            if g['action']=='analyze' and (not grant or not grant['remaining']):continue
             if g['action']=='research' and not runtime.available(c,p,'search'):continue
             payload={'analysis_only':True} if g['action']=='analyze' else {'query':project['idea'][:500],'urls':[]}
             signature=hashlib.sha256((project['idea']+project['facts']+g['action']).encode()).hexdigest()
             runtime.enqueue(c,p,'research',payload,key='manager-research:'+signature)
+
+
+def automation_blocker(c,p):
+    import engine
+    failed=c.execute("SELECT status,error FROM jobs WHERE project=? ORDER BY created DESC LIMIT 1",(p,)).fetchone()
+    if failed and failed['status'] in {'等待处理','结果未知'}:return '自动任务'+failed['status']+'：'+(failed['error'] or '请核对执行记录；结果未知的付费请求不重复发送')
+    if not c.execute('SELECT 1 FROM sources WHERE project=?',(p,)).fetchone():
+        if runtime.env(c,p,'SEARCH_API_KEY') and not runtime.env(c,p,'SEARCH_CALL_CNY'):return '市场检索已配置，但缺少 SEARCH_CALL_CNY 费用估计；不会发起费用未知的请求。'
+        if runtime.env(c,p,'SEARCH_API_KEY') and not runtime.available(c,p,'search'):return '市场检索所需预算不足或授权已失效；补充项目预算后中台会自动继续，已撤销或用尽的授权不会无限续费。'
+        return ''
+    if not engine.model_status(p,c)['configured']:return '公开资料收集后需要模型分析；请在部署环境配置 AI_API_KEY 和 AI_MODEL。当前没有模型连接，不会伪造研究成果。'
+    if not runtime.env(c,p,'MODEL_CALL_CNY'):return '缺少 MODEL_CALL_CNY 费用估计，请在部署环境配置后继续自动分析。'
+    grant=c.execute('SELECT remaining FROM grants WHERE project=?',(p,)).fetchone()
+    if not grant or grant['remaining']<1:return '本轮模型额度不足或预算尚未提供。请补充项目预算；不重复授权已用尽或撤销的额度。'
+    return ''
+
+
+def automate():
+    """Advance internal work without startup clicks; reserve only a bounded batch."""
+    with s.connect() as c:projects=[r['id'] for r in c.execute('SELECT id FROM projects')]
+    for p in projects:
+        with s.connect() as c:
+            s.begin_write(c)
+            project=c.execute('SELECT * FROM projects WHERE id=?',(p,)).fetchone();facts=json.loads(project['facts']);f=business.flow(c,p)
+            # Existing UI projects inherit the requested automatic experience once.
+            if 'automation_mode' not in facts:
+                facts['automation_mode']='automatic';c.execute('UPDATE projects SET facts=? WHERE id=?',(json.dumps(facts,ensure_ascii=False),p))
+                business.put_flow(c,p,autopilot=1);f=business.flow(c,p)
+            if not f['autopilot'] or f['status']!='进行中':continue
+            root=c.execute("SELECT * FROM tasks WHERE project=? AND dependency IS NULL AND role=?",(p,s.ROLES[0])).fetchone()
+            if root and root['status']=='待验收':s.mutate(c,'/api/tasks',{'project':p,'id':root['id'],'status':'已完成','note':'中台自动整理启动信息，未知条件保留'})
+            if not facts.get('automation_bootstrapped'):
+                bootstrap_complete=True
+                for tool,calls in [('search',1),('read',3)]:
+                    if runtime.available(c,p,tool):continue
+                    quote=runtime.env(c,p,tool.upper()+'_CALL_CNY') or '0'
+                    if tool=='search' and runtime.env(c,p,'SEARCH_API_KEY') and not runtime.env(c,p,'SEARCH_CALL_CNY'):
+                        bootstrap_complete=False;continue
+                    try:runtime.mutate(c,'/api/tools/grant',{'project':p,'tool':tool,'calls':calls,'days':7,'budget':str(s.money(quote)*calls/100)})
+                    except ValueError:bootstrap_complete=False
+                facts['automation_bootstrapped']=bootstrap_complete
+            if not facts.get('automation_model_batch') and not c.execute('SELECT 1 FROM grants WHERE project=?',(p,)).fetchone():
+                import engine,finance
+                quote=runtime.env(c,p,'MODEL_CALL_CNY')
+                if quote and engine.model_status(p,c)['configured']:
+                    charge=s.money(quote);remaining=max(0,project['budget']-finance.committed(c,p));calls=min(20,remaining//charge) if charge else 20
+                    if calls:
+                        s.mutate(c,'/api/grants',{'project':p,'calls':calls});facts['automation_model_batch']=True
+            c.execute('UPDATE projects SET facts=? WHERE id=?',(json.dumps(facts,ensure_ascii=False),p))
+            if f['stage'] in {'探索','验证','销售准备'} and root and root['status']=='已完成':
+                target={'探索':'验证','验证':'销售准备','销售准备':'经营'}[f['stage']]
+                if not business.gate(c,p,target):
+                    business.mutate(c,'/api/advance',{'project':p,'reason':'中台核对阶段条件后自动推进，不扩大外部支出授权'})
+            if f['stage']=='探索' and root and root['status']=='已完成':
+                options=business.rows(c,p,'opportunity')
+                if options and not any(r['value'].get('decision')=='确认验证' for r in options):
+                    try:mutate(c,'/api/director/choose',{'project':p,'id':options[0]['id'],'reason':'中台自动安排假设方向的内部验证，不确认为真实需求'});s.log(c,p,'中台自动选择有来源的候选进入内部验证，不代表批准采购或确认市场需求')
+                    except ValueError as e:s.log(c,p,'自动验证阻塞：'+str(e))

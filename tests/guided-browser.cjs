@@ -24,8 +24,9 @@ try{
  browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});let page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(base);await page.locator('[name=password]').fill(password);await page.getByRole('button',{name:'进入工作台'}).click();await page.locator('#create').waitFor();
  const save=async values=>{for(let[k,v]of Object.entries(values)){let el=page.locator('#form [name="'+k+'"]');if(await el.evaluate(e=>e.tagName==='SELECT'))await el.selectOption(v);else await el.fill(v)}await page.locator('#form button[type=submit]').click();await page.locator('#dialog').waitFor({state:'hidden'})};
- await page.locator('#create').click();assert.equal(await page.locator('#fields textarea:visible').count(),1);await save({idea:'TEST 从零开始，帮我探索旅行用品方向'});await page.locator('#accept-start').waitFor();await page.locator('#accept-start').click();await page.locator('#accept-start').waitFor({state:'hidden'});
- await page.locator('#manager-next').click();await page.locator('#form [name=allow_model]').check();await save({query:'TEST 旅行用品的需求与竞争'});await page.locator('[data-choose-direction]').waitFor({timeout:20000});await page.screenshot({path:'/tmp/venture-guided-research.png',fullPage:true});await page.locator('[data-choose-direction]').click();await page.waitForFunction(()=>document.querySelector('#view').textContent.includes('已选择验证'));
+ await page.locator('#create').click();assert.equal(await page.locator('#fields textarea:visible').count(),1);await save({idea:'TEST 从零开始，帮我探索旅行用品方向'});
+ await page.waitForFunction(async()=>{let s=await fetch('/api/state').then(r=>r.json());return s.entities.some(e=>e.kind==='opportunity'&&JSON.parse(e.data).decision==='确认验证')},{},{timeout:20000});
+ assert.equal(await page.locator('#accept-start').count(),0);await page.screenshot({path:'/tmp/venture-guided-research.png',fullPage:true});
  await page.locator('[data-page="商品与供应"]').click();await page.locator('[data-new-kind="product"]').click();await save({name:'TEST 旅行用品',sku:'TEST-GUIDED',specification:'TEST 已提供规格',material:'TEST 材料',weight:'10g',dimensions:'10cm',usage:'仅用于受控测试',limitations:'不是实际销售商品',source:'TEST 样品资料',classification:'事实'});
  let state=await page.request.get(base+'/api/state').then(r=>r.json()),p=state.projects[0].id,product=state.entities.find(x=>x.kind==='product').id;
  // Import a valid real PNG fixture without external retrieval.
@@ -38,5 +39,5 @@ try{
  // Mobile and per-page navigation regressions.
  for(let name of ['客户与订单','知识与连接','项目工作台'])await page.locator('[data-page="'+name+'"]').click();
  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await page.screenshot({path:'/tmp/venture-guided-mobile.png',fullPage:true});assert.deepEqual(errors,[]);
- console.log('引导流程通过：一句话启动、启动卡确认、受控联网研究来源、候选方向选择、自动验证计划、商品事实、实际图像协议15份文件、素材核查、权限及移动端。外部提供商为受控响应。');
+ console.log('引导流程通过：一句话自动启动、无需确认启动卡、受控联网研究来源、自动候选验证、自动验证计划、商品事实、实际图像协议15份文件、素材核查、权限及移动端。外部提供商为受控响应。');
 }finally{if(browser)await browser.close();child.kill();if(child.exitCode===null)await new Promise(r=>child.once('exit',r));fs.rmSync(tmp,{recursive:true,force:true})}})().catch(e=>{console.error(e);process.exit(1)});

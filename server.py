@@ -114,6 +114,7 @@ def mutate(c,path,d):
         entry=d.get('entry','start')
         if entry not in {'start','validate','operate'}:raise ValueError('项目入口无效')
         facts['entry']=entry
+        facts['automation_mode']='automatic' if d.get('quick_start') is True else 'manual'
         c.execute('INSERT INTO projects VALUES(?,?,?,?,?,?)',(p,name,idea,budget,json.dumps(facts,ensure_ascii=False),now()))
         previous=None;first=None
         initial=[('确认经营条件与阶段目标',ROLES[0]),('检验想法的需求与竞争来源' if entry=='validate' else '收集需求证据与候选机会',ROLES[1]),('核实商品与供应条件',ROLES[2]),('提交实物样品检查',ROLES[3]),('成本、风险与商品决策',ROLES[5])]
@@ -122,6 +123,7 @@ def mutate(c,path,d):
             t=uid(); c.execute('INSERT INTO tasks(id,project,title,role,status,dependency) VALUES(?,?,?,?,?,?)',(t,p,title,role,'待处理' if previous is None else '等待依赖',previous)); previous=t
             if first is None:first=t
         if d.get('quick_start') is True:
+            __import__('business').put_flow(c,p,autopilot=1)
             c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?)',(uid(),p,first,1,'排队中',None,None,now(),now()))
             c.execute("UPDATE tasks SET status='进行中' WHERE id=?",(first,))
         log(c,p,'项目启动：已创建阶段任务；尚未开展研究或外部操作'); return {'id':p,'task':first}

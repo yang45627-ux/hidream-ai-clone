@@ -150,7 +150,11 @@ def finish(attempt,result,error):
                 c.execute('UPDATE attempts SET output=?,updated=? WHERE id=?',(json.dumps(result,ensure_ascii=False),s.now(),attempt['id']));return
         c.execute('UPDATE attempts SET status=?,output=?,error=?,updated=? WHERE id=?',('失败' if error else '已交付',json.dumps(result,ensure_ascii=False) if result else None,error,s.now(),attempt['id']))
         c.execute('UPDATE tasks SET status=? WHERE id=?',('等待人工' if error else '待验收',attempt['task']))
-        if result and not result.get('unknowns') and full_task['role'] in {s.ROLES[5],s.ROLES[6],s.ROLES[9]}:
+        if result and full_task['role']==s.ROLES[0] and not full_task['dependency']:
+            import business
+            if business.flow(c,attempt['project'])['autopilot']:
+                s.mutate(c,'/api/tasks',{'project':attempt['project'],'id':attempt['task'],'status':'已完成','note':'中台自动整理启动信息；未知条件保留，不作为已确认事实'})
+        if result and ((not result.get('unknowns') and full_task['role']==s.ROLES[5]) or (result.get('artifact_ids') and full_task['role'] in {s.ROLES[1],s.ROLES[2],s.ROLES[3],s.ROLES[4],s.ROLES[6],s.ROLES[9],s.ROLES[10],s.ROLES[11],s.ROLES[13]})):
             import business
             if business.flow(c,attempt['project'])['autopilot']:
                 try:
@@ -174,6 +178,7 @@ def worker():
 
 def dispatch():
     import director
+    director.automate()
     director.dispatch_research()
     # Only projects explicitly enabling autopilot are eligible. Approval remains human.
     with s.connect() as c:
