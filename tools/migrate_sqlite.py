@@ -5,7 +5,7 @@ from urllib.parse import quote
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import server
 
-TABLES=['projects','accounts','project_owners','tasks','records','events','attempts','grants','messages','campaigns','orders','experiments','entities','entity_versions','flows','plans','approvals','task_specs','files','followups','connectors','external_actions','external_imports','expenses','stores','checkouts','payment_events','order_checks']
+TABLES=['projects','accounts','project_owners','tasks','records','events','attempts','grants','messages','campaigns','orders','experiments','entities','entity_versions','flows','plans','approvals','task_specs','files','followups','connectors','external_actions','external_imports','expenses','cash_entries','stores','checkouts','shop_messages','payment_events','order_checks','tool_grants','jobs','tool_uses','tool_charges','sources','assets','asset_fingerprints','video_requests','publications','article_routes','visits','checkout_attribution','purchase_attribution','contacts','shipments','service_actions','channel_metrics','consent_tokens','input_snapshots','fact_conflicts']
 
 def migrate(source):
     if not os.environ.get('DATABASE_URL'):raise ValueError('必须通过服务端DATABASE_URL指定目标PostgreSQL；不接受聊天中的连接凭据')

@@ -33,6 +33,10 @@ def connect():
     setup(c)
     import identity,business,connectors,finance,storefront
     identity.setup(c);business.setup(c);connectors.setup(c);finance.setup(c);storefront.setup(c)
+    import runtime,research,media,growth,integrations
+    runtime.setup(c);research.setup(c);media.setup(c);growth.setup(c);integrations.setup(c)
+    import workflows
+    workflows.setup(c)
     return c
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -58,7 +62,7 @@ def begin_write(c):
 
 def snapshot(c):
     from engine import model_status
-    state={k:[dict(r) for r in c.execute('SELECT * FROM '+k)] for k in ['projects','tasks','records','events','attempts','grants','messages','campaigns','orders','experiments','entities','entity_versions','flows','plans','approvals','task_specs','connectors','external_actions','external_imports','expenses','stores','checkouts']}
+    state={k:[dict(r) for r in c.execute('SELECT * FROM '+k)] for k in ['projects','tasks','records','events','attempts','grants','messages','campaigns','orders','experiments','entities','entity_versions','flows','plans','approvals','task_specs','connectors','external_actions','external_imports','expenses','cash_entries','stores','checkouts','shop_messages','tool_grants','tool_uses','tool_charges','jobs','sources','assets','video_requests','publications','article_routes','visits','checkout_attribution','purchase_attribution','contacts','shipments','service_actions','channel_metrics','fact_conflicts','input_snapshots','followups']}
     state['files']=[dict(r) for r in c.execute('SELECT id,project,name,mime,length(data) AS size,created FROM files')]
     # A database may return updated rows in a different physical order.
     # Present dependencies before their downstream work on both backends.
@@ -76,6 +80,7 @@ def snapshot(c):
 def invalidate(c, project, reason):
     c.execute("UPDATE tasks SET status=CASE WHEN dependency IS NULL THEN '需返工' ELSE '等待依赖' END,version=version+1 WHERE project=?",(project,))
     c.execute("UPDATE attempts SET status='已取消',error=?,updated=? WHERE project=? AND status IN ('排队中','执行中')",(reason,now(),project))
+    c.execute("UPDATE jobs SET status='已取消',error='项目资料更正，旧任务停止',updated=? WHERE project=? AND status IN ('排队中','执行中')",(now(),project))
     log(c,project,reason+'；关联任务需重新验证，历史成果保留')
 
 def effective_records(c,project):
@@ -100,14 +105,20 @@ def acceptance(c,task):
         if '风险' not in kinds and not any(r['kind']=='risk' for r in structured): raise ValueError('缺少风险核查记录')
 
 def mutate(c,path,d):
+    if path not in {'/api/orders/fulfillment','/api/connector/check','/api/connector/import','/api/action/reconcile'}:begin_write(c)
     if path=='/api/projects':
         p=uid();idea=required(d,'idea');name=required(d,'name') if d.get('name') else idea[:18]
         budget_known=d.get('budget') not in (None,'');budget=money(d['budget']) if budget_known else 0
         facts={k:d.get(k) or '待确定' for k in ['market','language','time','resources','excluded','loss_limit']}
         facts['budget_status']='已确认' if budget_known else '待确认'
+        entry=d.get('entry','start')
+        if entry not in {'start','validate','operate'}:raise ValueError('项目入口无效')
+        facts['entry']=entry
         c.execute('INSERT INTO projects VALUES(?,?,?,?,?,?)',(p,name,idea,budget,json.dumps(facts,ensure_ascii=False),now()))
         previous=None;first=None
-        for title,role in [('确认经营条件与阶段目标',ROLES[0]),('收集需求证据与候选机会',ROLES[1]),('核实商品与供应条件',ROLES[2]),('提交实物样品检查',ROLES[3]),('成本、风险与商品决策',ROLES[5])]:
+        initial=[('确认经营条件与阶段目标',ROLES[0]),('检验想法的需求与竞争来源' if entry=='validate' else '收集需求证据与候选机会',ROLES[1]),('核实商品与供应条件',ROLES[2]),('提交实物样品检查',ROLES[3]),('成本、风险与商品决策',ROLES[5])]
+        if entry=='operate':initial=[('确认现有站点诊断范围',ROLES[0]),('读取站点与购买路径诊断',ROLES[8]),('核对订单、费用与贡献',ROLES[5]),('客户与履约主要问题排查',ROLES[13]),('生成经营改进实验计划',ROLES[0])]
+        for title,role in initial:
             t=uid(); c.execute('INSERT INTO tasks(id,project,title,role,status,dependency) VALUES(?,?,?,?,?,?)',(t,p,title,role,'待处理' if previous is None else '等待依赖',previous)); previous=t
             if first is None:first=t
         if d.get('quick_start') is True:
@@ -116,9 +127,31 @@ def mutate(c,path,d):
         log(c,p,'项目启动：已创建阶段任务；尚未开展研究或外部操作'); return {'id':p,'task':first}
     p=required(d,'project')
     if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): raise ValueError('项目不存在')
-    if path in {'/api/store','/api/store/publish','/api/store/unpublish'}:
+    if path=='/api/orders/fulfillment':
+        import storefront
+        return storefront.fulfillment(c,p,required(d,'id'))
+    if path.startswith('/api/director/'):
+        import director
+        return director.mutate(c,path,d)
+    if path.startswith('/api/tools/') or path=='/api/jobs/cancel':
+        import runtime
+        return runtime.mutate(c,path,d)
+    if path.startswith('/api/media/'):
+        import media
+        return media.mutate(c,path,d)
+    if path.startswith('/api/growth/'):
+        import growth
+        return growth.mutate(c,path,d)
+    if path.startswith('/api/services/') or path.startswith('/api/contacts'):
+        import integrations
+        return integrations.mutate(c,path,d)
+    if path in {'/api/store','/api/store/prepare','/api/store/publish','/api/store/unpublish'}:
         import storefront
         return storefront.mutate(c,path,d)
+    if path=='/api/cash':
+        import finance
+        begin_write(c)
+        return finance.cash_record(c,d)
     if path=='/api/expenses':
         import finance
         return finance.record(c,d)
@@ -146,9 +179,11 @@ def mutate(c,path,d):
     if path=='/api/project/update':
         begin_write(c)
         name=required(d,'name'); idea=required(d,'idea'); budget_known=d.get('budget') not in (None,''); budget=money(d['budget']) if budget_known else 0
-        reserved=c.execute('SELECT COALESCE(SUM(budget),0) FROM campaigns WHERE project=?',(p,)).fetchone()[0]+c.execute("SELECT COALESCE(SUM(amount),0) FROM approvals WHERE project=? AND status='已批准'",(p,)).fetchone()[0]
+        from finance import committed
+        reserved=committed(c,p)
         if budget<reserved: raise ValueError('项目预算不能低于已分配活动预算；请先核查已有营销计划')
-        facts={k:d.get(k) or '待确定' for k in ['market','language','time','resources','excluded','loss_limit']}
+        original=json.loads(c.execute('SELECT facts FROM projects WHERE id=?',(p,)).fetchone()[0])
+        facts={**original,**{k:d.get(k) or '待确定' for k in ['market','language','time','resources','excluded','loss_limit']}}
         facts['budget_status']='已确认' if budget_known else '待确认'
         c.execute('UPDATE projects SET name=?,idea=?,budget=?,facts=? WHERE id=?',(name,idea,budget,json.dumps(facts,ensure_ascii=False),p))
         invalidate(c,p,'用户更正经营条件'); return {'ok':True}
@@ -159,6 +194,16 @@ def mutate(c,path,d):
     if path=='/api/grants':
         calls=d.get('calls')
         if not isinstance(calls,int) or isinstance(calls,bool) or not 0<=calls<=20: raise ValueError('调用授权必须为 0–20 次；0 表示撤销')
+        import runtime
+        begin_write(c)
+        c.execute("UPDATE tool_grants SET active=0 WHERE project=? AND tool='model'",(p,))
+        if calls:
+            quote=runtime.env(c,p,'MODEL_CALL_CNY')
+            if not quote:raise ValueError('请先配置MODEL_CALL_CNY（每次模型调用的费用预留估计）；费用未知时不开始付费调用')
+            reserve=money(quote)*calls
+            amount=d.get('budget',str(reserve/100))
+            if money(amount)<reserve:raise ValueError('模型费用预留不足以覆盖本轮次数')
+            runtime.mutate(c,'/api/tools/grant',{'project':p,'tool':'model','target':'*','calls':calls,'days':7,'budget':amount})
         c.execute('INSERT INTO grants VALUES(?,?) ON CONFLICT(project) DO UPDATE SET remaining=excluded.remaining',(p,calls))
         if calls==0:
             active=c.execute("SELECT task FROM attempts WHERE project=? AND status IN ('排队中','执行中')",(p,)).fetchall()
@@ -198,6 +243,9 @@ def mutate(c,path,d):
         if body['classification'] not in ['事实','假设','待核实']: raise ValueError('事实分类无效')
         if kind=='机会证据' and not body['source']: raise ValueError('机会证据必须填写来源与采集时间')
         if kind=='成本测算':
+            product_id=d.get('product_id')
+            if product_id and not c.execute("SELECT 1 FROM entities WHERE id=? AND project=? AND kind='product'",(product_id,p)).fetchone():raise ValueError('成本关联商品不属于当前项目')
+            body['product_id']=product_id
             body['scenario']=d.get('scenario','正常');body['basis']=d.get('basis','预测')
             if body['scenario'] not in {'正常','保守'} or body['basis'] not in {'预测','实际'}:raise ValueError('成本情景或口径无效')
             keys=['revenue','discount','refund','pass_through','purchase','shipping','fees','tax','other','marketing']
@@ -250,16 +298,40 @@ class Handler(BaseHTTPRequestHandler):
         import re
         from urllib.parse import urlsplit
         path=urlsplit(self.path).path
+        if re.fullmatch(r'/shop/[a-f0-9]{32}/articles/[a-f0-9]{32}',path):
+            import growth
+            with connect() as c:body=growth.article(c,path.split('/')[2],path.split('/')[4])
+            return self.send(200,body,'text/html; charset=utf-8') if body else self.send(404,{'error':'文章未发布'})
+        if re.fullmatch(r'/shop/[a-f0-9]{32}/asset/[a-f0-9]{32}',path):
+            import media
+            with connect() as c:
+                row=media.public_asset(c,path.split('/')[2],path.split('/')[4])
+            return self.send(200,bytes(row['data']),row['mime']) if row else self.send(404,{'error':'素材未发布'})
+        if re.fullmatch(r'/shop/[a-f0-9]{32}/sitemap.xml',path):
+            import html
+            origin=(os.environ.get('APP_PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL') or '').rstrip('/')
+            with connect() as c:
+                store=c.execute("SELECT * FROM stores WHERE id=? AND status='已发布'",(path.split('/')[2],)).fetchone()
+                if not store:return self.send(404,{'error':'商店未发布'})
+                urls=[origin+'/shop/'+store['id']]+[origin+'/shop/'+store['id']+'/articles/'+r['id'] for r in c.execute("SELECT r.id FROM article_routes r JOIN publications p ON p.id=r.current_publication WHERE r.store=? AND r.status='已发布' AND p.status='已发布'",(store['id'],))]
+            return self.send(200,('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+''.join('<url><loc>'+html.escape(u)+'</loc></url>' for u in urls)+'</urlset>').encode(),'application/xml; charset=utf-8')
         if re.fullmatch(r'/shop/[a-f0-9]{32}',path):
             import storefront
             with connect() as c:store=storefront.public_store(c,path.rsplit('/',1)[1])
             if not store:return self.send(404,{'error':'商店未发布或已下线'})
-            return self.send(200,(ROOT/'web/shop.html').read_bytes(),'text/html; charset=utf-8')
+            body=(ROOT/'web/shop.html').read_bytes()
+            if store['mode']!='正式':body=body.replace(b'<title>',b'<meta name="robots" content="noindex,nofollow"><title>',1)
+            return self.send(200,body,'text/html; charset=utf-8')
         if path=='/shop-ui.js':return self.send(200,(ROOT/'web/shop-ui.js').read_bytes(),'text/javascript; charset=utf-8')
         if re.fullmatch(r'/api/shop/[a-f0-9]{32}',path):
             import storefront
             with connect() as c:store=storefront.public_store(c,path.rsplit('/',1)[1])
             return self.send(200,store) if store else self.send(404,{'error':'商店未发布'})
+        if re.fullmatch(r'/unsubscribe/[a-f0-9]{64}',path):
+            import integrations
+            with connect() as c:body=integrations.unsubscribe(c,path.rsplit('/',1)[1])
+            return self.send(200,body,'text/html; charset=utf-8') if body else self.send(404,{'error':'链接无效'})
+        if path=='/robots.txt':return self.send(200,b'User-agent: *\nAllow: /shop/\nDisallow: /api/\n','text/plain; charset=utf-8')
         if self.path=='/api/health':
             try:
                 with connect() as c:c.execute('SELECT 1').fetchone()
@@ -273,10 +345,25 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as c:
                 state=identity.scoped(snapshot(c),c,self.actor['id']);state['account']=self.actor
                 import finance
+                import director,growth,research,integrations
+                from engine import model_status
+                state['models']={p['id']:model_status(p['id'],c) for p in state['projects']}
+                if not self.actor.get('admin'):state['model']={'configured':False,'key_present':False,'model_present':False,'model':'','endpoint':'','research':'独立工作区使用自己的模型凭据'}
+                state['guidance']={p['id']:director.guidance(c,p['id']) for p in state['projects']}
+                state['runtime_health']={p['id']:__import__('runtime').health(c,p['id']) for p in state['projects']}
+                state['analytics']={p['id']:growth.metrics(c,p['id']) for p in state['projects']}
+                state['capabilities']={p['id']:integrations.status(c,p['id'])|{'research':research.status(c,p['id']),'model_cost':{'quote':__import__('runtime').env(c,p['id'],'MODEL_CALL_CNY'),'status':'调用费用按配置估计预留，实际账单另核对'}} for p in state['projects']}
+                state['financial_planning']={p['id']:finance.planning(c,p['id']) for p in state['projects']}
                 state['financials']={p['id']:finance.statement(c,p['id']) for p in state['projects']}
                 state['stage_gaps']={p['id']:business.gate(c,p['id'],{'探索':'验证','验证':'销售准备','销售准备':'经营','经营':'经营'}[business.flow(c,p['id'])['stage']]) for p in state['projects']}
                 if self.actor.get('admin'):state['accounts']=[dict(r) for r in c.execute('SELECT id,username,disabled,created FROM accounts')]
                 return self.send(200,state)
+        if re.fullmatch(r'/api/asset/[a-f0-9]{32}',path):
+            import identity
+            with connect() as c:
+                row=c.execute('SELECT f.* FROM assets a JOIN files f ON f.id=a.file_id WHERE a.id=?',(path.rsplit('/',1)[1],)).fetchone()
+                if not row or not identity.owns(c,self.actor['id'],row['project']):return self.send(404,{'error':'素材不存在'})
+                return self.send(200,bytes(row['data']),row['mime'])
         if self.path.startswith('/api/file/'):
             import identity
             with connect() as c:
@@ -290,11 +377,13 @@ class Handler(BaseHTTPRequestHandler):
                 state=identity.scoped(snapshot(c),c,self.actor['id'])
                 if not any(x['id']==p for x in state['projects']): return self.send(404,{'error':'项目不存在'})
                 return self.send(200,{k:[r for r in state[k] if isinstance(r,dict) and r.get('project',r.get('id'))==p] for k in state if isinstance(state[k],list) and k!='roles'})
-        files={'/':'index.html','/app.js':'app.js','/business.js':'business.js','/style.css':'style.css'}
+        files={'/':'index.html','/app.js':'app.js','/business.js':'business.js','/workspace.js':'workspace.js','/style.css':'style.css'}
         if self.path not in files: return self.send(404,{'error':'不存在'})
         f=ROOT/'web'/files[self.path]; self.send(200,f.read_bytes(),{'html':'text/html; charset=utf-8','js':'text/javascript; charset=utf-8','css':'text/css; charset=utf-8'}[f.suffix[1:]])
     def do_POST(self):
-        import re
+        import re,limits
+        route='login' if self.path=='/api/login' else 'checkout' if self.path.endswith('/checkout') else 'contact' if self.path.endswith('/contact') else 'events' if self.path.endswith('/events') else 'unsubscribe' if self.path.startswith('/unsubscribe/') else None
+        if route and not limits.allow(self.client_address[0],route,{'login':20,'checkout':30,'events':240,'contact':20,'unsubscribe':60}[route]):return self.send(429,{'error':'请求较多，请稍后再试'})
         if re.fullmatch(r'/webhooks/stripe/[a-f0-9]{32}',self.path):
             try:
                 length=int(self.headers.get('Content-Length','0'))
@@ -304,6 +393,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,result)
             except (ValueError,KeyError,TypeError):return self.send(400,{'error':'Webhook签名或支付数据核验失败'})
         if not self.same_origin(): return self.send(403,{'error':'不允许跨站操作'})
+        if re.fullmatch(r'/unsubscribe/[a-f0-9]{64}',self.path):
+            import integrations
+            with connect() as c:body=integrations.unsubscribe(c,self.path.rsplit('/',1)[1],True)
+            return self.send(200,body,'text/html; charset=utf-8') if body else self.send(404,{'error':'链接无效'})
+        if re.fullmatch(r'/api/shop/[a-f0-9]{32}/contact',self.path):
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=10000:raise ValueError('服务请求大小无效')
+                data=json.loads(self.rfile.read(length))
+                if not isinstance(data,dict):raise ValueError('服务请求无效')
+                import storefront
+                with connect() as c:result=storefront.contact(c,self.path.split('/')[3],data)
+                return self.send(200,result)
+            except (ValueError,KeyError,TypeError) as e:return self.send(400,{'error':str(e)})
+        if re.fullmatch(r'/api/shop/[a-f0-9]{32}/events',self.path):
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=3000:raise ValueError('事件大小无效')
+                data=json.loads(self.rfile.read(length))
+                if not isinstance(data,dict):raise ValueError('事件无效')
+                if any(x in self.headers.get('User-Agent','').lower() for x in ['bot','crawler','spider']):return self.send(200,{'ignored':True})
+                import growth
+                with connect() as c:result=growth.track(c,self.path.split('/')[3],data)
+                return self.send(200,result)
+            except (ValueError,KeyError,TypeError):return self.send(400,{'error':'访问事件无效'})
         if re.fullmatch(r'/api/shop/[a-f0-9]{32}/checkout',self.path):
             try:
                 length=int(self.headers.get('Content-Length','0'))
@@ -312,7 +426,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(data,dict):raise ValueError('结账内容无效')
                 import storefront
                 origin=(os.environ.get('APP_PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL','')).rstrip('/')
-                with connect() as c:result=storefront.checkout(c,self.path.split('/')[3],data,origin)
+                with connect() as c:
+                    result=storefront.checkout(c,self.path.split('/')[3],data,origin)
+                    if result.get('reference'):
+                        import growth
+                        growth.bind_checkout(c,self.path.split('/')[3],result['reference'],data.get('attribution',{}))
                 return self.send(200,result)
             except (ValueError,KeyError,TypeError) as e:return self.send(400,{'error':str(e)})
         if self.path!='/api/login' and not self.authorized():return self.send(401,{'error':'请先登录'})
@@ -365,6 +483,11 @@ if __name__=='__main__':
     from engine import recover, worker
     recover()
     import connectors
-    with connect() as c:connectors.recover(c)
-    threading.Thread(target=worker,daemon=True).start()
+    with connect() as c:
+        connectors.recover(c)
+        import runtime,integrations
+        runtime.recover(c);integrations.recover(c)
+    workers=int(os.environ.get('APP_WORKERS','2'))
+    if not 1<=workers<=4:raise SystemExit('APP_WORKERS须为1–4，避免无界并发')
+    for _ in range(workers):threading.Thread(target=worker,daemon=True).start()
     ThreadingHTTPServer((host,int(os.environ.get('PORT','3000'))),Handler).serve_forever()

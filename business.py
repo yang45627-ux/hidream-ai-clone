@@ -32,7 +32,8 @@ def task(c,p,title,role,dependency=None,key=None):
         existing=c.execute('SELECT task FROM followups WHERE project=? AND event_key=?',(p,key)).fetchone()
         if existing:return existing['task']
     i=s.uid();c.execute('INSERT INTO tasks(id,project,title,role,status,dependency) VALUES(?,?,?,?,?,?)',(i,p,title,role,'等待依赖' if dependency else '待处理',dependency))
-    spec={'objective':title,'input_refs':[r['id'] for r in rows(c,p)],'deliverables':['结构化成果','证据与缺口','交接建议'],'acceptance_rules':['结论有来源','未知不得冒充事实','外部动作需操作证据'],'permission_scope':['读取本项目资料','生成草稿'],'budget_limit':{'calls':1,'output_tokens':2000},'escalation_rules':['缺资料','超预算','外部授权不可用'],'constraints':'不得采购、付款、退款或发布，除非单独审批并调用已授权工具'}
+    from workflows import spec as role_spec
+    spec=role_spec(role,title)|{'input_refs':[r['id'] for r in rows(c,p)]}
     c.execute('INSERT INTO task_specs VALUES(?,?,?)',(i,p,json.dumps(spec,ensure_ascii=False)))
     if key:c.execute('INSERT INTO followups VALUES(?,?,?)',(p,key,i))
     return i
@@ -52,22 +53,31 @@ def gate(c,p,stage):
     es=rows(c,p);by={k:[r['value'] for r in es if r['kind']==k] for k in KINDS};missing=[]
     if stage=='验证':
         if not any(o.get('decision')=='确认验证' for o in by['opportunity']):missing.append('至少确认一个带来源的机会方向')
-    if stage in {'销售准备','经营'}:
+    if stage in {'销售准备','上线','经营'}:
         if not by['product']:missing.append('完整商品主档')
         for product in [r for r in es if r['kind']=='product']:
             i=product['id']
+            if product['value'].get('classification') in {'待核实','假设'}:missing.append(product['value']['name']+'：商品事实仍待用户或可靠来源核查')
             if not any(x['product_id']==i and x['result']=='通过' for x in by['sample']):missing.append(product['value']['name']+'：人工样品检查通过')
             if not any(x['product_id']==i and x['valid_until']>=datetime.date.today().isoformat() for x in by['quote']):missing.append(product['value']['name']+'：有效供应报价')
         costs=[json.loads(r['body']) for r in s.effective_records(c,p) if r['kind']=='成本测算']
-        for scenario in ['正常','保守']:
-            scenario_costs=[r for r in costs if r.get('scenario','正常')==scenario]
-            if not scenario_costs or not scenario_costs[-1].get('result') or scenario_costs[-1]['result']['pre_marketing']<=0:missing.append(scenario+'情景：完整且广告前贡献为正的最新成本测算')
+        for product in [r for r in es if r['kind']=='product']:
+            for scenario in ['正常','保守']:
+                scenario_costs=[r for r in costs if r.get('scenario','正常')==scenario and r.get('product_id')==product['id']]
+                if not scenario_costs or not scenario_costs[-1].get('result') or scenario_costs[-1]['result']['post_marketing']<=0:
+                    missing.append(product['value']['name']+'：'+scenario+'情景须有本商品完整且营销后贡献为正的最新成本测算')
         if not by['risk']:missing.append('风险核查记录')
         if any(x['status']!='已处理' for x in by['risk']):missing.append('所有未解除风险均需处理或专业复核')
-    if stage=='经营':
+    if stage in {'上线','经营'}:
+        import media
+        language=json.loads(c.execute('SELECT facts FROM projects WHERE id=?',(p,)).fetchone()[0]).get('language','')
+        if language.lower() not in {'en','english','英语','zh','中文','汉语','zh-cn'}:missing.append('明确主要站点语言：当前内置商店支持中文或英语')
+        for product in [r for r in es if r['kind']=='product']:
+            if not media.ready(c,p,product['id']):missing.append(product['value']['name']+'：核查通过的5张主图与10张9:16详情图')
         needed={'商品信息','支付','运费配送','移动端','购物车','结账','测试订单','退款流程','数据追踪','客服与政策'}
         passed={x['name'] for x in by['checklist'] if x['result']=='通过'}
         missing += ['上线检查：'+x for x in sorted(needed-passed)]
+    if stage=='经营':
         native=c.execute("SELECT 1 FROM stores WHERE project=? AND mode='正式' AND status='已发布'",(p,)).fetchone()
         if native:
             if not c.execute("SELECT 1 FROM checkouts WHERE project=? AND status='已支付'",(p,)).fetchone():missing.append('至少一次经过签名回调核对的支付链路测试（测试支付不代表获客）')
@@ -77,7 +87,19 @@ def gate(c,p,stage):
     return missing
 
 def accept_task(c,t):
+    attempts=c.execute("SELECT output FROM attempts WHERE task=? AND version=? AND status='已交付' ORDER BY created DESC",(t['id'],t['version'])).fetchall()
+    if not attempts:raise ValueError('任务缺少当前版本的实际交付，请先执行并查看成果')
+    result=json.loads(attempts[0]['output'])
+    if not result.get('deliverables'):raise ValueError('任务没有可验收产物')
+    if t['role'] in {s.ROLES[1],s.ROLES[2],s.ROLES[4]} and not result.get('evidence_ids'):raise ValueError('专业结论缺少可追溯证据，不能通过验收')
     if t['role']==s.ROLES[3] and '实物样品检查' in t['title'] and not any(r['value']['result']=='通过' for r in rows(c,t['project'],'sample')):raise ValueError('请在商品档案中提交结构化实物检查及来源')
+    if t['role']==s.ROLES[7]:
+        import media
+        if not media.ready(c,t['project']):raise ValueError('视觉任务须交付经过核查的实际素材，而不是制作方案')
+    if t['role']==s.ROLES[8] and '检查' in t['title']:
+        missing=gate(c,t['project'],'上线')
+        if missing:raise ValueError('上线检查尚有缺口：'+'；'.join(missing))
+
 
 def mutate(c,path,d):
     p=d['project']
@@ -109,7 +131,22 @@ def mutate(c,path,d):
             c.execute('UPDATE entities SET data=?,version=?,updated=? WHERE id=?',(data,version,s.now(),i))
         else:c.execute('INSERT INTO entities VALUES(?,?,?,?,?,?,?)',(i,p,kind,data,version,s.now(),s.now()))
         c.execute('INSERT INTO entity_versions VALUES(?,?,?,?,?,?,?)',(s.uid(),p,i,version,data,reason,s.now()))
-        if old and kind in {'product','supplier','quote','sample','risk','opportunity'}:
+        if old and kind=='product':
+            for content in rows(c,p,'content'):
+                if content['value'].get('product_id')!=i:continue
+                body={**content['value'],'classification':'待核实','product_fact_changed':'商品事实已更正，原文案需重新核查'}
+                content_version=content['version']+1;c.execute('UPDATE entities SET data=?,version=?,updated=? WHERE id=?',(json.dumps(body,ensure_ascii=False),content_version,s.now(),content['id']))
+                c.execute('INSERT INTO entity_versions VALUES(?,?,?,?,?,?,?)',(s.uid(),p,content['id'],content_version,json.dumps(body,ensure_ascii=False),'关联商品事实更正，旧内容不得继续当作已核查',s.now()))
+                c.execute("UPDATE publications SET status='待重新核查',updated=? WHERE content_id=? AND status='已发布'",(s.now(),content['id']))
+                c.execute("UPDATE external_actions SET error='关联商品事实已更正，请核查外部已发布页面',updated=? WHERE content=? AND status='已确认'",(s.now(),content['id']))
+            store=c.execute('SELECT * FROM stores WHERE project=?',(p,)).fetchone()
+            if store and any(x['product_id']==i for x in json.loads(store['catalog'])):
+                c.execute("UPDATE stores SET status='待重新核查',updated=? WHERE project=?",(s.now(),p))
+                followup(c,p,'product-change:'+i+':'+str(old['version']+1),'商品事实变化，核查页面、素材、定价与已发生订单',s.ROLES[8])
+        if old and kind=='content':
+            c.execute("UPDATE publications SET status='待重新核查',updated=? WHERE content_id=? AND status='已发布'",(s.now(),i))
+        decision_only=old and kind=='opportunity' and {k:v for k,v in json.loads(old['data']).items() if k!='decision'}=={k:v for k,v in v.items() if k!='decision'}
+        if old and kind in {'product','supplier','quote','sample','risk','opportunity'} and not decision_only:
             s.invalidate(c,p,'业务档案更正：'+kind);put_flow(c,p,status='暂停')
         if kind=='sample' and v['result']=='通过':
             c.execute("UPDATE tasks SET status='待验收' WHERE project=? AND role=? AND status='等待人工'",(p,s.ROLES[3]))
@@ -126,6 +163,7 @@ def mutate(c,path,d):
         if status=='进行中' and any(r['value']['status']!='已处理' for r in rows(c,p,'risk')):raise ValueError('风险尚未处理，不能恢复项目')
         put_flow(c,p,status=status,autopilot=auto)
         if status!='进行中':
+            c.execute("UPDATE jobs SET status='已取消',error='项目暂停或结束',updated=? WHERE project=? AND status IN ('排队中','执行中')",(s.now(),p))
             c.execute("UPDATE attempts SET status='已取消',error='项目暂停或结束',updated=? WHERE project=? AND status IN ('排队中','执行中')",(s.now(),p))
             c.execute("UPDATE tasks SET status='暂停',version=version+1 WHERE project=? AND status='进行中'",(p,))
         s.log(c,p,'项目状态：'+status+'；自动派工：'+str(auto));return flow(c,p)
@@ -143,7 +181,7 @@ def mutate(c,path,d):
         c.execute('INSERT INTO plans VALUES(?,?,?,?,?,?)',(s.uid(),p,stage,reason,json.dumps(tasks),s.now()));s.log(c,p,'用户确认进入'+stage+'阶段：'+reason);return {'stage':stage,'tasks':tasks}
     if path=='/api/approvals':
         kind=d.get('kind')
-        if kind not in {'采购','追加预算','调价','退款赔偿','方向变更','内容发布','站点发布'}:raise ValueError('审批类型无效')
+        if kind not in {'采购','追加预算','调价','退款赔偿','方向变更','内容发布','站点发布','广告执行','客服回复','物流交接','许可触达','供应询价'}:raise ValueError('审批类型无效')
         amount=s.money(d.get('amount','0'));i=s.uid()
         c.execute('INSERT INTO approvals VALUES(?,?,?,?,?,?,?,?,?,?)',(i,p,kind,s.required(d,'subject'),amount,'待审批',s.required(d,'reason'),'',s.now(),s.now()))
         s.log(c,p,'提交审批：'+kind+'；未执行外部操作');return {'id':i}
@@ -152,14 +190,14 @@ def mutate(c,path,d):
         if not row:raise ValueError('审批不存在')
         status=d.get('status')
         if status=='已撤销' and row['status']=='已批准':
-            note=s.required(d,'decision');c.execute("UPDATE approvals SET status='已撤销',decision=?,updated=? WHERE id=?",(note,s.now(),row['id']))
+            note=s.required(d,'decision') if d.get('decision') else '用户已核查本次内容并确认：'+status;c.execute("UPDATE approvals SET status='已撤销',decision=?,updated=? WHERE id=?",(note,s.now(),row['id']))
             c.execute("UPDATE external_actions SET status='已取消',error='审批已撤销',updated=? WHERE approval=? AND status='待执行'",(s.now(),row['id']))
+            c.execute("UPDATE service_actions SET status='已取消',error='审批已撤销',updated=? WHERE approval=? AND status='待执行'",(s.now(),row['id']))
             s.log(c,p,'审批撤销：'+row['subject']);return {'ok':True}
         if row['status']!='待审批' or status not in {'已批准','已拒绝'}:raise ValueError('审批不存在、已处理或决策无效')
-        if status=='已批准' and row['amount']:
-            used=c.execute("SELECT COALESCE(SUM(amount),0) FROM approvals WHERE project=? AND status='已批准'",(p,)).fetchone()[0]
-            campaigns=c.execute('SELECT COALESCE(SUM(budget),0) FROM campaigns WHERE project=?',(p,)).fetchone()[0]
+        if status=='已批准' and row['amount'] and row['kind']!='广告执行':
+            from finance import committed
             budget=c.execute('SELECT budget FROM projects WHERE id=?',(p,)).fetchone()[0]
-            if used+campaigns+row['amount']>budget:raise ValueError('审批金额超过剩余预算；请先调整预算再审批')
-        note=s.required(d,'decision');c.execute('UPDATE approvals SET status=?,decision=?,updated=? WHERE id=?',(status,note,s.now(),row['id']));s.log(c,p,'审批'+status+'：'+row['subject']+'；'+note);return {'ok':True}
+            if committed(c,p,exclude_approval=row['id'])+row['amount']>budget:raise ValueError('审批金额超过剩余预算；请先调整预算再审批')
+        note=s.required(d,'decision') if d.get('decision') else '用户已核查本次内容并确认：'+status;c.execute('UPDATE approvals SET status=?,decision=?,updated=? WHERE id=?',(status,note,s.now(),row['id']));s.log(c,p,'审批'+status+'：'+row['subject']+'；'+note);return {'ok':True}
     raise ValueError('未知业务操作')

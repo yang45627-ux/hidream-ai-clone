@@ -8,6 +8,7 @@ class Cursor:
     def __init__(self,cursor):self.cursor=cursor
     def fetchone(self):
         row=self.cursor.fetchone();return Record(row) if row is not None else None
+    def fetchmany(self,size=100):return [Record(r) for r in self.cursor.fetchmany(size)]
     def fetchall(self):return [Record(r) for r in self.cursor.fetchall()]
     def __iter__(self):return iter(self.fetchall())
     @property

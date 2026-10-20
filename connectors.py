@@ -65,14 +65,16 @@ def mutate(c,path,d):
     if path=='/api/connector/revoke':
         c.execute("UPDATE connectors SET status='已撤销' WHERE project=?",(p,));c.execute("UPDATE external_actions SET status='已取消',updated=? WHERE project=? AND status='待执行'",(s.now(),p));s.log(c,p,'站点授权撤销，未执行操作已取消');return {'ok':True}
     if path=='/api/connector/check':
+        if connector['status']=='已撤销':raise ValueError('站点已撤销，请先重新登记再验证权限')
+        c.commit()
         try:
             result=request(c,p,'/wp-json/wp/v2/users/me?context=edit')
             if not isinstance(result,dict):raise ValueError('站点用户接口返回格式无效')
             caps=result.get('capabilities',{})
             status='可执行' if caps.get('publish_posts') else '可读取'
-            c.execute('UPDATE connectors SET status=?,site=?,error=?,checked=? WHERE project=?',(status,site,'',s.now(),p));return {'status':status}
+            updated=c.execute("UPDATE connectors SET status=?,site=?,error=?,checked=? WHERE project=? AND status!='已撤销'",(status,site,'',s.now(),p));return {'status':status if updated.rowcount else '已撤销'}
         except ValueError as e:
-            c.execute("UPDATE connectors SET status='异常',error=?,checked=? WHERE project=?",(str(e),s.now(),p));return {'status':'异常','error':str(e)}
+            c.execute("UPDATE connectors SET status='异常',error=?,checked=? WHERE project=? AND status!='已撤销'",(str(e),s.now(),p));return {'status':'异常','error':str(e)}
     if path=='/api/connector/import':
         if connector['status'] not in {'可读取','可执行','部分可用'}:raise ValueError('请先验证站点读取权限')
         page=d.get('page',1)
@@ -80,8 +82,11 @@ def mutate(c,path,d):
         reports=[]
         for kind in ['products','orders']:
             try:
+                c.commit()
                 items=request(c,p,'/wp-json/wc/v3/'+kind+'?'+urlencode({'per_page':20,'page':page}))
                 if not isinstance(items,list):raise ValueError('WooCommerce接口未返回列表')
+                s.begin_write(c)
+                if c.execute('SELECT status FROM connectors WHERE project=?',(p,)).fetchone()[0]=='已撤销':raise ValueError('读取期间授权已撤销，后续导入停止')
                 for item in items:
                     keys=['id','name','sku','status','price','stock_status'] if kind=='products' else ['id','status','currency','total','total_tax','date_paid','date_created']
                     value={key:item.get(key) for key in keys};data=json.dumps(value,ensure_ascii=False);external=str(item['id'])
@@ -92,9 +97,11 @@ def mutate(c,path,d):
                     if kind=='orders':
                         import business
                         business.followup(c,p,'site-order:'+external,'核查真实站点订单（成本及税费待核对）：'+external,s.ROLES[12])
+                c.commit()
                 reports.append({'kind':kind,'read':len(items),'page':page,'next_page':page+1 if len(items)==20 else None})
-            except ValueError as e:reports.append({'kind':kind,'error':str(e)})
-        if any('error' in r for r in reports):c.execute("UPDATE connectors SET status='部分可用',error='部分WooCommerce读取未成功，请检查接口权限' WHERE project=?",(p,))
+            except ValueError as e:
+                c.rollback();reports.append({'kind':kind,'error':str(e)})
+        if any('error' in r for r in reports):c.execute("UPDATE connectors SET status='部分可用',error='部分WooCommerce读取未成功，请检查接口权限' WHERE project=? AND status!='已撤销'",(p,))
         s.log(c,p,'读取WooCommerce第'+str(page)+'页；外部订单金额未作为已核对净收入或利润')
         return {'reports':reports,'note':'每页最多20条；订单仅作为待核对来源，不推定支付和成本，不获取客户地址或联系方式'}
     if connector['status']!='可执行':raise ValueError('站点尚未验证可执行或已撤销授权')
@@ -113,7 +120,7 @@ def mutate(c,path,d):
     if not row:raise ValueError('操作不存在')
     if path=='/api/action/reconcile':return reconcile(c,row)
     if path=='/api/action/execute':
-        c.execute('BEGIN IMMEDIATE')
+        s.begin_write(c)
         if c.execute('SELECT status FROM connectors WHERE id=?',(connector['id'],)).fetchone()['status']!='可执行':raise ValueError('站点授权已变化，操作未发送')
         row=c.execute('SELECT * FROM external_actions WHERE id=? AND project=?',(row['id'],p)).fetchone()
         if row['status']=='已确认':return {'status':'已确认','url':row['url']}

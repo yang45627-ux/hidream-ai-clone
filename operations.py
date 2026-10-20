@@ -11,15 +11,14 @@ def setup(c):
 def mutate(c,path,d):
     p=d['project']
     if path=='/api/campaigns':
-        c.execute('BEGIN IMMEDIATE')
+        s.begin_write(c)
         name=s.required(d,'name'); audience=s.required(d,'audience'); channel=s.required(d,'channel'); landing=s.required(d,'landing'); hypothesis=s.required(d,'hypothesis'); stop=s.required(d,'stop_rule'); budget=s.money(d.get('budget'))
-        total=c.execute('SELECT COALESCE(SUM(budget),0) FROM campaigns WHERE project=?',(p,)).fetchone()[0]
+        from finance import committed
         cap=c.execute('SELECT budget FROM projects WHERE id=?',(p,)).fetchone()[0]
-        approved=c.execute("SELECT COALESCE(SUM(amount),0) FROM approvals WHERE project=? AND status='已批准'",(p,)).fetchone()[0]
-        if total+budget+approved>cap: raise ValueError('活动预算总额超过项目验证预算，请先调整项目预算或活动范围')
+        if committed(c,p)+budget>cap:raise ValueError('活动预算总额超过项目验证预算，请先调整项目预算或活动范围')
         i=s.uid(); c.execute('INSERT INTO campaigns VALUES(?,?,?,?,?,?,?,?,?,0,?,?)',(i,p,name,audience,channel,landing,hypothesis,stop,budget,'草稿',s.now())); s.log(c,p,'新建营销测试草稿：'+name+'；尚未发布或支出'); return {'id':i}
     if path=='/api/campaign/update':
-        c.execute('BEGIN IMMEDIATE')
+        s.begin_write(c)
         row=c.execute('SELECT * FROM campaigns WHERE id=? AND project=?',(d.get('id'),p)).fetchone()
         if not row: raise ValueError('活动不存在')
         spent=s.money(d.get('spent')); note=s.required(d,'note'); status=d.get('status')
@@ -28,7 +27,7 @@ def mutate(c,path,d):
         if status not in {'草稿','人工执行中','暂停','结束'}: raise ValueError('活动状态无效')
         c.execute('UPDATE campaigns SET spent=?,status=? WHERE id=?',(spent,status,row['id'])); s.log(c,p,'人工更新活动：'+row['name']+' → '+status+'；证据：'+note); return {'ok':True}
     if path=='/api/orders':
-        c.execute('BEGIN IMMEDIATE')
+        s.begin_write(c)
         external=s.required(d,'external_id'); revenue=s.money(d.get('revenue')); cost=s.money(d.get('cost'))
         existing=c.execute('SELECT * FROM orders WHERE project=? AND external_id=?',(p,external)).fetchone()
         if existing:
@@ -39,7 +38,7 @@ def mutate(c,path,d):
         business.followup(c,p,'order:'+i,'订单核查与履约：'+external,s.ROLES[12])
         return {'id':i,'duplicate':False}
     if path=='/api/order/update':
-        c.execute('BEGIN IMMEDIATE')
+        s.begin_write(c)
         row=c.execute('SELECT * FROM orders WHERE id=? AND project=?',(d.get('id'),p)).fetchone()
         if not row: raise ValueError('订单不存在')
         check=c.execute('SELECT * FROM order_checks WHERE order_id=?',(row['id'],)).fetchone()

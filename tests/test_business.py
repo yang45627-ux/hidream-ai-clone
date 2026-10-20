@@ -36,8 +36,8 @@ class Business(unittest.TestCase):
         self.entity('sample',product_id=product,inspector='测试检查人',inspection_date=datetime.date.today().isoformat(),result='通过',findings='实物检查通过',source='检查资料ID')
         self.entity('risk',name='商品风险',market='目标市场',level='低',status='已处理',source='适用标准',action='人工核查证据')
         amounts={k:'0' for k in ['discount','refund','pass_through','purchase','shipping','fees','tax','other','marketing']}
-        self.op('/api/records',kind='成本测算',content='完整预测',revenue='100',**amounts)
-        self.op('/api/records',kind='成本测算',content='保守预测',scenario='保守',revenue='80',**amounts)
+        self.op('/api/records',kind='成本测算',product_id=product,content='完整预测',revenue='100',**amounts)
+        self.op('/api/records',kind='成本测算',product_id=product,content='保守预测',scenario='保守',revenue='80',**amounts)
         self.assertEqual(business.gate(self.c,self.p,'销售准备'),[])
         self.assertEqual(self.op('/api/advance',reason='商品与成本已核查')['stage'],'销售准备')
         old=self.c.execute('SELECT * FROM entities WHERE id=?',(product,)).fetchone();value=json.loads(old['data']);value['material']='更正材料'

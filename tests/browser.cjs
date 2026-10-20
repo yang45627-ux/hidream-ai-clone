@@ -15,6 +15,7 @@ const assert = require('node:assert/strict');
   await page.locator('[name=market]').fill('美国');
   await page.locator('#form button[type=submit]').click();
   await page.getByRole('heading',{name:'项目启动卡：TEST-浏览器经营项目',exact:true}).waitFor({timeout:15000});
+  await page.locator('#advanced-tasks').evaluate(e=>e.open=true);
   await page.locator('[data-task]').first().click();
   await page.locator('[name=status]').selectOption('已完成');
   await page.locator('[name=note]').fill('浏览器验收项目启动卡');
