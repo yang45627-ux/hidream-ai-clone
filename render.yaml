@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: venture-workspace
+    runtime: python
+    plan: free
+    buildCommand: python3 -m unittest discover -s tests -v
+    startCommand: python3 server.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.14
+      - key: APP_HOST
+        value: 0.0.0.0
+      - key: APP_ACCESS_TOKEN
+        generateValue: true
+      - key: APP_EPHEMERAL
+        value: "true"
