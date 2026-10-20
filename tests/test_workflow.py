@@ -1,13 +1,15 @@
+import support
 import unittest, tempfile
 from pathlib import Path
 import server
 
 class Workflow(unittest.TestCase):
     def setUp(self):
+        support.start_database(self)
         self.temp=tempfile.TemporaryDirectory(); self.old=server.DB; server.DB=Path(self.temp.name)/'test.db'; self.c=server.connect()
         self.p=server.mutate(self.c,'/api/projects',{'name':'测试项目','idea':'验证需求','budget':'1000'})['id']; self.c.commit()
     def tearDown(self):
-        self.c.close(); server.DB=self.old; self.temp.cleanup()
+        self.c.close(); server.DB=self.old; self.temp.cleanup(); support.stop_database(self)
     def test_dependencies_review_rework_persistence(self):
         tasks=server.snapshot(self.c)['tasks']; first,second=tasks[:2]
         def change(t,s): return server.mutate(self.c,'/api/tasks',{'project':self.p,'id':t['id'],'status':s,'note':'测试交接证据'})

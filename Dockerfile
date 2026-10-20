@@ -1,7 +1,10 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY server.py engine.py operations.py ./
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY server.py engine.py operations.py identity.py business.py connectors.py database.py finance.py storefront.py ./
 COPY web ./web
+COPY tools ./tools
 RUN useradd --create-home --uid 10001 appuser && mkdir /app/.data && chown -R appuser:appuser /app
 USER appuser
 ENV APP_HOST=0.0.0.0 PORT=3000 APP_DB=/app/.data/app.db

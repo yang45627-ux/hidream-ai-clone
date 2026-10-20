@@ -15,7 +15,8 @@ def mutate(c,path,d):
         name=s.required(d,'name'); audience=s.required(d,'audience'); channel=s.required(d,'channel'); landing=s.required(d,'landing'); hypothesis=s.required(d,'hypothesis'); stop=s.required(d,'stop_rule'); budget=s.money(d.get('budget'))
         total=c.execute('SELECT COALESCE(SUM(budget),0) FROM campaigns WHERE project=?',(p,)).fetchone()[0]
         cap=c.execute('SELECT budget FROM projects WHERE id=?',(p,)).fetchone()[0]
-        if total+budget>cap: raise ValueError('活动预算总额超过项目验证预算，请先调整项目预算或活动范围')
+        approved=c.execute("SELECT COALESCE(SUM(amount),0) FROM approvals WHERE project=? AND status='已批准'",(p,)).fetchone()[0]
+        if total+budget+approved>cap: raise ValueError('活动预算总额超过项目验证预算，请先调整项目预算或活动范围')
         i=s.uid(); c.execute('INSERT INTO campaigns VALUES(?,?,?,?,?,?,?,?,?,0,?,?)',(i,p,name,audience,channel,landing,hypothesis,stop,budget,'草稿',s.now())); s.log(c,p,'新建营销测试草稿：'+name+'；尚未发布或支出'); return {'id':i}
     if path=='/api/campaign/update':
         c.execute('BEGIN IMMEDIATE')
@@ -33,11 +34,20 @@ def mutate(c,path,d):
         if existing:
             if existing['revenue']!=revenue or existing['cost']!=cost: raise ValueError('同一订单号的金额冲突，请核查原始记录')
             return {'id':existing['id'],'duplicate':True}
-        i=s.uid(); c.execute('INSERT INTO orders VALUES(?,?,?,?,?,0,?,?,?)',(i,p,external,revenue,cost,'待核查','',s.now())); s.log(c,p,'人工导入订单 '+external+'；待核查，不代表系统收到真实支付'); return {'id':i,'duplicate':False}
+        i=s.uid(); c.execute('INSERT INTO orders VALUES(?,?,?,?,?,0,?,?,?)',(i,p,external,revenue,cost,'待核查','',s.now())); s.log(c,p,'人工导入订单 '+external+'；待核查，不代表系统收到真实支付')
+        import business
+        business.followup(c,p,'order:'+i,'订单核查与履约：'+external,s.ROLES[12])
+        return {'id':i,'duplicate':False}
     if path=='/api/order/update':
         c.execute('BEGIN IMMEDIATE')
         row=c.execute('SELECT * FROM orders WHERE id=? AND project=?',(d.get('id'),p)).fetchone()
         if not row: raise ValueError('订单不存在')
+        check=c.execute('SELECT * FROM order_checks WHERE order_id=?',(row['id'],)).fetchone()
+        if check and not check['verified'] and d.get('status')=='已确认支付':
+            if d.get('verified_cost') in {None,''} or d.get('verified_net_revenue') in {None,''}:raise ValueError('请先核对并填写新支付订单的净收入和可变成本，未知成本不能填成0')
+            cost=s.money(d.get('verified_cost'));net=s.money(d.get('verified_net_revenue'))
+            c.execute('UPDATE orders SET cost=?,revenue=? WHERE id=?',(cost,net,row['id']));c.execute('UPDATE order_checks SET verified=1 WHERE order_id=?',(row['id'],))
+            row=c.execute('SELECT * FROM orders WHERE id=?',(row['id'],)).fetchone()
         status=d.get('status'); note=s.required(d,'note'); tracking=d.get('tracking',''); refund=s.money(d.get('refund'))
         transitions={'待核查':{'待核查','已确认支付','已取消'},'已确认支付':{'已确认支付','已发货','售后处理中'},'已发货':{'已发货','已交付','售后处理中'},'已交付':{'已交付','售后处理中'},'售后处理中':{'售后处理中','已关闭'},'已关闭':{'已关闭'},'已取消':{'已取消'}}
         if status not in transitions[row['status']]: raise ValueError('订单状态不能跳过支付核查或履约步骤')
@@ -54,5 +64,9 @@ def mutate(c,path,d):
         status=d.get('status')
         if status not in {'数据不足','假设获支持','假设未获支持','停止'}: raise ValueError('实验状态无效')
         result=s.required(d,'result'); decision=s.required(d,'decision')
-        c.execute('UPDATE experiments SET result=?,decision=?,status=? WHERE id=?',(result,decision,status,row['id'])); s.log(c,p,'人工实验复盘：'+status+'；下一步：'+decision); return {'ok':True}
+        c.execute('UPDATE experiments SET result=?,decision=?,status=? WHERE id=?',(result,decision,status,row['id'])); s.log(c,p,'人工实验复盘：'+status+'；下一步：'+decision)
+        import business
+        task=business.followup(c,p,'experiment:'+row['id'],'经营复盘：'+row['hypothesis'],s.ROLES[0])
+        c.execute("UPDATE tasks SET status='待处理',version=version+1 WHERE id=? AND status='已完成'",(task,))
+        return {'ok':True,'task':task}
     raise ValueError('未知操作')

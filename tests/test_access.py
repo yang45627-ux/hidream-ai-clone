@@ -1,3 +1,4 @@
+import support
 import http.client,json,threading,unittest,tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -6,13 +7,14 @@ import server
 
 class PublicAccess(unittest.TestCase):
     def setUp(self):
+        support.start_database(self)
         self.temp=tempfile.TemporaryDirectory();self.old=server.DB;server.DB=Path(self.temp.name)/'access.db'
         self.token='test-only-random-access-token-123456'
         self.env=patch.dict('os.environ',{'APP_ACCESS_TOKEN':self.token,'APP_PUBLIC_ORIGIN':'https://venture.example'})
         self.env.start();self.http=ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
         self.thread=threading.Thread(target=self.http.serve_forever,daemon=True);self.thread.start()
     def tearDown(self):
-        self.http.shutdown();self.http.server_close();self.thread.join();self.env.stop();server.DB=self.old;self.temp.cleanup()
+        self.http.shutdown();self.http.server_close();self.thread.join();self.env.stop();server.DB=self.old;self.temp.cleanup(); support.stop_database(self)
     def request(self,path,data=None,cookie=None,origin=None):
         conn=http.client.HTTPConnection('127.0.0.1',self.http.server_port)
         headers={'Content-Type':'application/json'}
