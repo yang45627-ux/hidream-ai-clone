@@ -13,6 +13,11 @@ def setup(c):
 def env(c,p,name):
     owner=c.execute('SELECT owner FROM project_owners WHERE project=?',(p,)).fetchone()
     prefix='' if not owner or owner['owner']=='root' else 'WORKSPACE_'+owner['owner'].upper()+'_'
+    if name in {'AI_BASE_URL','AI_API_KEY','AI_MODEL','MODEL_CALL_CNY'}:
+        from model_connection import saved
+        connection=saved(c,owner['owner'] if owner else 'root')
+        if connection:
+            return connection[{'AI_BASE_URL':'base','AI_API_KEY':'api_key','AI_MODEL':'model','MODEL_CALL_CNY':'quote'}[name]]
     return os.environ.get(prefix+name,os.environ.get(name,'') if name.endswith('_CALL_CNY') else '')
 
 def available(c,p,tool,target='*'):

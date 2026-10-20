@@ -87,7 +87,7 @@ def run(job,payload):
     with s.connect() as c:
         runtime.check(c,job);key=runtime.env(c,p,'MEDIA_API_KEY') or runtime.env(c,p,'AI_API_KEY') or runtime.env(c,p,'OPENAI_API_KEY')
         if not key:raise ValueError('请在服务端配置 MEDIA_API_KEY；不会把制作方案当作生成文件')
-        base=(runtime.env(c,p,'MEDIA_BASE_URL') or 'https://api.openai.com/v1').rstrip('/')
+        base=(runtime.env(c,p,'MEDIA_BASE_URL') or ('https://api.openai.com/v1' if runtime.env(c,p,'MEDIA_API_KEY') else runtime.env(c,p,'AI_BASE_URL') or 'https://api.openai.com/v1')).rstrip('/')
         if job['kind']=='video' and payload.get('poll'):
             row=c.execute('SELECT * FROM video_requests WHERE id=? AND project=?',(payload['poll'],p)).fetchone()
             if not row:raise ValueError('视频请求不存在')

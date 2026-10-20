@@ -44,7 +44,7 @@ def restore(source):
         counts={}
         with s.connect() as c:
             s.begin_write(c)
-            if any(c.execute('SELECT COUNT(*) FROM '+table).fetchone()[0] for table in TABLES):raise ValueError('恢复目标非空，拒绝覆盖')
+            if any(c.execute('SELECT COUNT(*) FROM '+table).fetchone()[0] for table in TABLES+['model_connections']):raise ValueError('恢复目标非空，拒绝覆盖')
             for table in TABLES:
                 cursor=c.execute('SELECT * FROM '+table+' LIMIT 0');description=getattr(cursor,'description',None) or cursor.cursor.description;columns={col[0] for col in description}
                 digest=hashlib.sha256();count=0

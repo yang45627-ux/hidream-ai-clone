@@ -55,14 +55,7 @@ class Execution(unittest.TestCase):
         self.assertEqual(self.task()['status'],'需返工')
     def test_provider_protocol_and_invalid_evidence(self):
         result={'summary':'研究草稿','deliverables':['已有资料分析'],'evidence_ids':['invented'],'unknowns':['缺少核实'],'next_steps':['补充证据']}
-        class Response:
-            def __enter__(self):return self
-            def __exit__(self,*a):pass
-            def read(self,*a):return json.dumps({'choices':[{'message':{'content':json.dumps(result)}}]}).encode()
-        class Opener:
-            def open(self,req,timeout):
-                payload=json.loads(req.data);assert payload['max_tokens']==2000;return Response()
-        with patch('engine.model_config',return_value=('https://example.com/v1','test-only-key','test-model')),patch('urllib.request.build_opener',return_value=Opener()):
+        with patch('engine.model_config',return_value=('https://example.com/v1','test-only-key','test-model')),patch('net.json_request',side_effect=lambda *a,**k:{'choices':[{'message':{'content':json.dumps(result)}}]}):
             with self.assertRaisesRegex(ValueError,'不存在'):engine.model_call({'records':[]})
             result['evidence_ids']=[];self.assertIn('草稿',engine.model_call({'records':[]})['execution'])
 

@@ -86,8 +86,8 @@ class Extended(Helpers):
         p=self.product();gaps=business.gate(self.c,self.p,'上线');self.assertTrue(any('退款流程' in x for x in gaps));self.assertTrue(any('主图' in x for x in gaps))
     def test_actual_image_generation_preserves_reference_and_exact_detail_ratio(self):
         p=self.product();f,png=self.file();self.grant('image',calls=1,budget='1',target=p)
-        with patch.dict('os.environ',{'MEDIA_API_KEY':'TEST-not-real','IMAGE_CALL_CNY':'1'}),patch('net.request',return_value=(json.dumps({'data':[{'b64_json':base64.b64encode(png).decode()}]}).encode(),{})) as call:
-            job=self.op('/api/media/generate',product=p,reference=f,rights='TEST 自有素材',role='详情',count=1,prompt='测试排版');runtime.step();self.assertEqual(self.job(job['id'])['status'],'已完成',self.job(job['id'])['error']);self.assertIn(b'name="image"',call.call_args.args[1])
+        with patch.dict('os.environ',{'MEDIA_API_KEY':'','AI_API_KEY':'TEST-not-real','AI_BASE_URL':'https://provider.example/v1','IMAGE_CALL_CNY':'1'}),patch('net.request',return_value=(json.dumps({'data':[{'b64_json':base64.b64encode(png).decode()}]}).encode(),{})) as call:
+            job=self.op('/api/media/generate',product=p,reference=f,rights='TEST 自有素材',role='详情',count=1,prompt='测试排版');runtime.step();self.assertEqual(self.job(job['id'])['status'],'已完成',self.job(job['id'])['error']);self.assertIn(b'name="image"',call.call_args.args[1]);self.assertEqual(call.call_args.args[0],'https://provider.example/v1/images/edits')
         asset=self.c.execute('SELECT * FROM assets WHERE project=?',(self.p,)).fetchone();self.assertEqual((asset['width'],asset['height']),(864,1536));self.assertEqual(asset['status'],'待核查')
         self.op('/api/media/approve',id=asset['id'],note='TEST 已核查一致性和权利');self.assertEqual(self.c.execute('SELECT status FROM assets WHERE id=?',(asset['id'],)).fetchone()[0],'已核查')
     def test_image_set_preflight_stops_before_any_charge_when_authorization_short(self):

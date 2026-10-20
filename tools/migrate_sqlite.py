@@ -19,7 +19,7 @@ def migrate(source):
     try:
         with server.connect() as dst:
             dst.execute('BEGIN IMMEDIATE')
-            if any(dst.execute('SELECT COUNT(*) FROM '+table).fetchone()[0] for table in TABLES):raise ValueError('目标数据库非空，拒绝覆盖已有数据')
+            if any(dst.execute('SELECT COUNT(*) FROM '+table).fetchone()[0] for table in TABLES+['model_connections']):raise ValueError('目标数据库非空，拒绝覆盖已有数据')
             for table in TABLES:
                 if table not in present:continue
                 records=src.execute('SELECT * FROM '+table).fetchall()

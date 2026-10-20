@@ -12,6 +12,7 @@ def model(context):
  return {'summary':'TEST 研究候选方向','deliverables':['TEST 有来源的方向比较'],'evidence_ids':refs,'unknowns':['市场需求仍待验证'],'next_steps':['TEST 访谈验证'],'opportunities':[{'name':'TEST 旅行收纳方向','audience':'TEST 旅行用户','problem':'TEST 收纳需求','competition':'TEST 竞争资料不足','supply_hypothesis':'TEST 待核实','risk':'TEST 样本不足','validation':'TEST 实际访谈','evidence_ids':refs}]}
 engine.model_call=model
 def request(url,*args,**kwargs):
+ if url.endswith('/models'):return json.dumps({'data':[{'id':'TEST-connected-model'}]}).encode(),{}
  if url.startswith('https://example.org/'):return b'<html><body>TEST public source body</body></html>',{'Content-Type':'text/html'}
  if not url.endswith('/images/edits'):raise ValueError('Unexpected fixture request')
  return json.dumps({'data':[{'b64_json':base64.b64encode(png).decode()}]}).encode(),{}
@@ -24,6 +25,8 @@ try{
  browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});let page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(base);await page.locator('[name=password]').fill(password);await page.getByRole('button',{name:'进入工作台'}).click();await page.locator('#create').waitFor();
  const save=async values=>{for(let[k,v]of Object.entries(values)){let el=page.locator('#form [name="'+k+'"]');if(await el.evaluate(e=>e.tagName==='SELECT'))await el.selectOption(v);else await el.fill(v)}await page.locator('#form button[type=submit]').click();await page.locator('#dialog').waitFor({state:'hidden'})};
+ await page.locator('[data-page="知识与连接"]').click();await page.locator('#model-connect').click();await page.locator('#form [name=base]').fill('https://provider.example/v1');await page.locator('#form [name=api_key]').fill('TEST-browser-private-token');await page.locator('#form [name=quote]').fill('0');await page.locator('#fetch-models').click();await page.waitForFunction(()=>document.querySelector('#model-list-status').textContent.includes('共 1 个模型'));assert.equal(await page.locator('#form [name=api_key]').inputValue(),'');await save({});let privateState=await page.request.get(base+'/api/state').then(r=>r.json());assert.equal(JSON.stringify(privateState).includes('TEST-browser-private-token'),false);assert.equal(privateState.model_connection.model,'TEST-connected-model');
+
  await page.locator('#create').click();assert.equal(await page.locator('#fields textarea:visible').count(),1);await save({idea:'TEST 从零开始，帮我探索旅行用品方向'});
  await page.waitForFunction(async()=>{let s=await fetch('/api/state').then(r=>r.json());return s.entities.some(e=>e.kind==='opportunity'&&JSON.parse(e.data).decision==='确认验证')},{},{timeout:20000});
  assert.equal(await page.locator('#accept-start').count(),0);await page.screenshot({path:'/tmp/venture-guided-research.png',fullPage:true});

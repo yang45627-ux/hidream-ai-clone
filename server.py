@@ -35,6 +35,7 @@ def connect():
     identity.setup(c);business.setup(c);connectors.setup(c);finance.setup(c);storefront.setup(c)
     import runtime,research,media,growth,integrations
     runtime.setup(c);research.setup(c);media.setup(c);growth.setup(c);integrations.setup(c)
+    __import__('model_connection').setup(c)
     import workflows
     workflows.setup(c)
     return c
@@ -346,11 +347,15 @@ class Handler(BaseHTTPRequestHandler):
             import identity,business
             with connect() as c:
                 state=identity.scoped(snapshot(c),c,self.actor['id']);state['account']=self.actor
+                state['model_connection']=__import__('model_connection').public(c,self.actor['id'])
                 import finance
                 import director,growth,research,integrations
                 from engine import model_status
                 state['models']={p['id']:model_status(p['id'],c) for p in state['projects']}
                 if not self.actor.get('admin'):state['model']={'configured':False,'key_present':False,'model_present':False,'model':'','endpoint':'','research':'独立工作区使用自己的模型凭据'}
+                connection=state['model_connection']
+                if connection['key_present']:
+                    state['model']={'configured':bool(connection['model']),'key_present':True,'model_present':bool(connection['model']),'model':connection['model'],'endpoint':__import__('urllib.parse',fromlist=['urlsplit']).urlsplit(connection['base']).hostname,'research':'当前工作区私密配置；模型列表可访问不代表对话已验证'}
                 state['guidance']={p['id']:director.guidance(c,p['id']) for p in state['projects']}
                 state['runtime_health']={p['id']:__import__('runtime').health(c,p['id']) for p in state['projects']}
                 state['analytics']={p['id']:growth.metrics(c,p['id']) for p in state['projects']}
@@ -462,7 +467,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,{'ok':True},headers={'Set-Cookie':'venture_access=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'})
             import identity
             with connect() as c:
-                if self.path in {'/api/account/create','/api/account/disable'}:
+                if self.path in {'/api/model/save','/api/model/list','/api/model/test','/api/model/clear'}:
+                    result=__import__('model_connection').mutate(c,self.path,d,self.actor['id'])
+                elif self.path in {'/api/account/create','/api/account/disable'}:
                     if not self.actor.get('admin'):return self.send(403,{'error':'需要管理员权限'})
                     if self.path=='/api/account/create':result=identity.create(c,d)
                     else:
