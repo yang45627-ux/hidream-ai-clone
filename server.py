@@ -1,6 +1,7 @@
 import json, os, sqlite3, uuid
 import threading
 import secrets
+import hmac
 from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -30,6 +31,9 @@ def connect():
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def uid(): return uuid.uuid4().hex
+def access_cookie(token):
+    # Cookies must be ASCII and must not contain the configured password.
+    return hmac.digest(token.encode('utf-8'),b'venture-session-v1','sha256').hex()
 def log(c,p,a): c.execute('INSERT INTO events(project,action,created) VALUES(?,?,?)',(p,a,now()))
 def required(data,key):
     value = data.get(key)
@@ -169,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
         try:cookie.load(self.headers.get('Cookie',''))
         except Exception:return False
         value=cookie.get('venture_access')
-        return bool(value and secrets.compare_digest(value.value,token))
+        return bool(value and secrets.compare_digest(value.value.encode('utf-8'),access_cookie(token).encode('ascii')))
     def same_origin(self):
         origin=self.headers.get('Origin')
         public=os.environ.get('APP_PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL')
@@ -202,10 +206,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path=='/api/login':
                 token=os.environ.get('APP_ACCESS_TOKEN')
                 password=d.get('password','')
-                if not token or not isinstance(password,str) or not secrets.compare_digest(password,token):return self.send(401,{'error':'访问密码不正确'})
+                if not token or not isinstance(password,str) or not secrets.compare_digest(password.encode('utf-8'),token.encode('utf-8')):return self.send(401,{'error':'访问密码不正确'})
                 public=os.environ.get('APP_PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL','')
                 secure='; Secure' if public.startswith('https://') else ''
-                return self.send(200,{'ok':True},headers={'Set-Cookie':'venture_access='+token+'; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400'+secure})
+                return self.send(200,{'ok':True},headers={'Set-Cookie':'venture_access='+access_cookie(token)+'; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400'+secure})
             if self.path=='/api/logout':return self.send(200,{'ok':True},headers={'Set-Cookie':'venture_access=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'})
             with connect() as c: result=mutate(c,self.path,d)
             self.send(200,result)

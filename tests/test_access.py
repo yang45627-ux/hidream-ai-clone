@@ -33,7 +33,18 @@ class PublicAccess(unittest.TestCase):
         self.assertEqual(self.request('/api/projects',{'name':'不允许'},cookie=cookie,origin='https://other.example')[0],403)
         self.assertIn('Max-Age=0',self.request('/api/logout',{},cookie=cookie,origin='https://venture.example')[1]['Set-Cookie'])
     def test_authenticated_mutation_behind_https_proxy(self):
-        cookie='venture_access='+self.token
+        cookie='venture_access='+server.access_cookie(self.token)
         status,_,body=self.request('/api/projects',{'name':'测试','idea':'部署验证','budget':'1'},cookie=cookie,origin='https://venture.example')
         self.assertEqual(status,200);self.assertTrue(json.loads(body)['id'])
         _,_,body=self.request('/api/state',cookie=cookie);self.assertNotIn(self.token,body.decode());self.assertEqual(len(json.loads(body)['projects']),1)
+    def test_unicode_wrong_password_returns_401(self):
+        self.assertEqual(self.request('/api/login',{'password':'这是错误的中文密码🔐'})[0],401)
+    def test_unicode_password_login_and_cookie(self):
+        token='中文访问密码🔐-'+('安全配置'*6)
+        with patch.dict('os.environ',{'APP_ACCESS_TOKEN':token}):
+            status,headers,_=self.request('/api/login',{'password':token})
+            self.assertEqual(status,200)
+            cookie=headers['Set-Cookie']
+            self.assertTrue(cookie.isascii());self.assertNotIn(token,cookie)
+            self.assertEqual(self.request('/api/state',cookie=cookie)[0],200)
+            self.assertEqual(self.request('/api/login',{'password':token+'错'})[0],401)
