@@ -135,7 +135,9 @@ def mutate(c,path,d):
         stage=stages[index+1];missing=gate(c,p,stage)
         if missing:raise ValueError('尚未达到阶段条件：'+'；'.join(missing))
         if old['status']!='进行中':raise ValueError('请先恢复项目')
-        reason=s.required(d,'reason');put_flow(c,p,stage=stage)
+        reason=d.get('reason') or '用户确认系统阶段检查通过，进入'+stage+'；不扩大支出或外部操作授权'
+        if not isinstance(reason,str) or len(reason)>10000:raise ValueError('阶段确认内容无效')
+        put_flow(c,p,stage=stage)
         titles={'验证':[('供应与样品验证计划',s.ROLES[3]),('商品合规风险核查',s.ROLES[4])],'销售准备':[('品牌与商品页面文案',s.ROLES[6]),('商品主图与详情设计方案',s.ROLES[7]),('站点购买与追踪检查',s.ROLES[8]),('客服知识与服务政策',s.ROLES[13])],'经营':[('首轮SEO内容与获客计划',s.ROLES[9]),('渠道合作与内容计划',s.ROLES[10]),('预算内广告测试方案',s.ROLES[11]),('订单履约监测计划',s.ROLES[12])]}
         tasks=[task(c,p,title,role,key='stage:'+stage+':'+role) for title,role in titles[stage]]
         c.execute('INSERT INTO plans VALUES(?,?,?,?,?,?)',(s.uid(),p,stage,reason,json.dumps(tasks),s.now()));s.log(c,p,'用户确认进入'+stage+'阶段：'+reason);return {'stage':stage,'tasks':tasks}

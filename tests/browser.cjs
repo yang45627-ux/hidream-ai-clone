@@ -8,12 +8,12 @@ const assert = require('node:assert/strict');
  try{
   await page.goto(process.env.BASE_URL||'http://127.0.0.1:3012');
   await page.getByRole('button',{name:'＋ 新建项目',exact:true}).click();
+  await page.locator('#fields details').evaluate(e=>e.open=true);
   await page.locator('[name=name]').fill('TEST-浏览器经营项目');
   await page.locator('[name=idea]').fill('验证宠物旅行配件的真实需求');
   await page.locator('[name=budget]').fill('1000');
   await page.locator('[name=market]').fill('美国');
-  await page.getByRole('button',{name:'保存并继续',exact:true}).click();
-  await page.getByRole('button',{name:'推进当前阶段 →',exact:true}).click();
+  await page.locator('#form button[type=submit]').click();
   await page.getByRole('heading',{name:'项目启动卡：TEST-浏览器经营项目',exact:true}).waitFor({timeout:15000});
   await page.locator('[data-task]').first().click();
   await page.locator('[name=status]').selectOption('已完成');

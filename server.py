@@ -101,13 +101,19 @@ def acceptance(c,task):
 
 def mutate(c,path,d):
     if path=='/api/projects':
-        p=uid(); name=required(d,'name'); idea=required(d,'idea'); budget=money(d.get('budget'))
-        facts={k:d.get(k,'待确定') for k in ['market','language','time','resources','excluded','loss_limit']}
+        p=uid();idea=required(d,'idea');name=required(d,'name') if d.get('name') else idea[:18]
+        budget_known=d.get('budget') not in (None,'');budget=money(d['budget']) if budget_known else 0
+        facts={k:d.get(k) or '待确定' for k in ['market','language','time','resources','excluded','loss_limit']}
+        facts['budget_status']='已确认' if budget_known else '待确认'
         c.execute('INSERT INTO projects VALUES(?,?,?,?,?,?)',(p,name,idea,budget,json.dumps(facts,ensure_ascii=False),now()))
-        previous=None
+        previous=None;first=None
         for title,role in [('确认经营条件与阶段目标',ROLES[0]),('收集需求证据与候选机会',ROLES[1]),('核实商品与供应条件',ROLES[2]),('提交实物样品检查',ROLES[3]),('成本、风险与商品决策',ROLES[5])]:
             t=uid(); c.execute('INSERT INTO tasks(id,project,title,role,status,dependency) VALUES(?,?,?,?,?,?)',(t,p,title,role,'待处理' if previous is None else '等待依赖',previous)); previous=t
-        log(c,p,'项目启动：已创建阶段任务；尚未开展研究或外部操作'); return {'id':p}
+            if first is None:first=t
+        if d.get('quick_start') is True:
+            c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?)',(uid(),p,first,1,'排队中',None,None,now(),now()))
+            c.execute("UPDATE tasks SET status='进行中' WHERE id=?",(first,))
+        log(c,p,'项目启动：已创建阶段任务；尚未开展研究或外部操作'); return {'id':p,'task':first}
     p=required(d,'project')
     if not c.execute('SELECT 1 FROM projects WHERE id=?',(p,)).fetchone(): raise ValueError('项目不存在')
     if path in {'/api/store','/api/store/publish','/api/store/unpublish'}:
@@ -139,10 +145,11 @@ def mutate(c,path,d):
         return operate(c,path,d)
     if path=='/api/project/update':
         begin_write(c)
-        name=required(d,'name'); idea=required(d,'idea'); budget=money(d.get('budget'))
+        name=required(d,'name'); idea=required(d,'idea'); budget_known=d.get('budget') not in (None,''); budget=money(d['budget']) if budget_known else 0
         reserved=c.execute('SELECT COALESCE(SUM(budget),0) FROM campaigns WHERE project=?',(p,)).fetchone()[0]+c.execute("SELECT COALESCE(SUM(amount),0) FROM approvals WHERE project=? AND status='已批准'",(p,)).fetchone()[0]
         if budget<reserved: raise ValueError('项目预算不能低于已分配活动预算；请先核查已有营销计划')
-        facts={k:d.get(k,'待确定') for k in ['market','language','time','resources','excluded','loss_limit']}
+        facts={k:d.get(k) or '待确定' for k in ['market','language','time','resources','excluded','loss_limit']}
+        facts['budget_status']='已确认' if budget_known else '待确认'
         c.execute('UPDATE projects SET name=?,idea=?,budget=?,facts=? WHERE id=?',(name,idea,budget,json.dumps(facts,ensure_ascii=False),p))
         invalidate(c,p,'用户更正经营条件'); return {'ok':True}
     if path=='/api/messages':

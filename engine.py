@@ -99,8 +99,10 @@ def execute(attempt):
             experiments=[dict(r) for r in c.execute('SELECT * FROM experiments WHERE project=?',(project['id'],))]
         facts=json.loads(project['facts'])
         if task['role']==s.ROLES[0]:
-            unknowns=[k for k,v in facts.items() if not v or v=='待确定']
-            result={'summary':'项目启动卡：'+project['name'],'deliverables':['当前目标：'+project['idea'],'验证预算：人民币 '+str(project['budget']/100),'阶段：机会探索 → 商品与供应验证','权限：资料整理与分析；不包含采购、发布、付款或广告','验收：机会有来源、供应有记录、样品人工检查、成本完整、风险核查'],'evidence_ids':[],'unknowns':['待补充：'+k for k in unknowns],'next_steps':['确认本阶段目标及经营条件','补充需求证据与商品供应材料','先提交样品检查，再决定是否进入销售准备'],'execution':'程序依据用户条件生成；未调用模型'}
+            labels={'market':'目标市场','language':'主要语言','time':'每周可投入时间','resources':'已有资源','excluded':'不经营的商品及停止条件','loss_limit':'可承受损失','budget_status':'验证预算'}
+            unknowns=[labels.get(k,k) for k,v in facts.items() if not v or v in {'待确定','待确认'}]
+            budget_note='验证预算待确认；未授权任何支出' if facts.get('budget_status')=='待确认' else '验证预算：人民币 '+str(project['budget']/100)
+            result={'summary':'项目启动卡：'+project['name'],'deliverables':['当前目标：'+project['idea'],budget_note,'阶段：机会探索 → 商品与供应验证','权限：资料整理与分析；不包含采购、发布、付款或广告','验收：机会有来源、供应有记录、样品人工检查、成本完整、风险核查'],'evidence_ids':[],'unknowns':['待补充：'+k for k in unknowns],'next_steps':['确认本阶段目标及经营条件','补充需求证据与商品供应材料','先提交样品检查，再决定是否进入销售准备'],'execution':'程序依据用户条件生成；未调用模型'}
             if '复盘' in task['title']:
                 result={'summary':'经营复盘与下一轮行动','deliverables':[e['hypothesis']+'：'+e['status']+'；结果：'+e['result'] for e in experiments],'evidence_ids':[],'unknowns':['数据不足时不能判断改动有效'] if any(e['status']=='数据不足' for e in experiments) else [],'next_steps':[e['decision'] for e in experiments if e['decision']],'execution':'依据已录入实验记录的程序汇总，不代表真实经营效果已核实'}
         elif task['role']==s.ROLES[5]:

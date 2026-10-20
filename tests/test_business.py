@@ -9,6 +9,22 @@ class Business(unittest.TestCase):
     def op(self,path,**d):
         self.c.commit();r=s.mutate(self.c,path,{'project':self.p,**d});self.c.commit();return r
     def entity(self,kind,**v):return self.op('/api/entities',kind=kind,value=v)['id']
+    def test_simple_start_and_confirmation_keeps_gates(self):
+        r=s.mutate(self.c,'/api/projects',{'idea':'从零开始尝试跨境电商','quick_start':True})
+        project=self.c.execute('SELECT * FROM projects WHERE id=?',(r['id'],)).fetchone()
+        self.assertEqual(project['name'],'从零开始尝试跨境电商')
+        self.assertEqual(project['budget'],0)
+        self.assertEqual(json.loads(project['facts'])['budget_status'],'待确认')
+        zero=s.mutate(self.c,'/api/projects',{'idea':'明确零预算','budget':'0'})
+        self.assertEqual(json.loads(self.c.execute('SELECT facts FROM projects WHERE id=?',(zero['id'],)).fetchone()[0])['budget_status'],'已确认')
+        self.assertEqual(self.c.execute('SELECT count(*) FROM attempts WHERE project=?',(r['id'],)).fetchone()[0],1)
+        with self.assertRaisesRegex(ValueError,'尚未达到'):
+            self.op('/api/advance')
+        self.c.rollback()
+        self.entity('opportunity',name='方向',audience='客户',problem='需求',source='访谈来源',validation='兴趣测试',decision='确认验证')
+        self.assertEqual(self.op('/api/advance')['stage'],'验证')
+        self.assertIn('不扩大支出',self.c.execute('SELECT reason FROM plans WHERE project=?',(self.p,)).fetchone()[0])
+
     def test_gates_sample_and_versions(self):
         self.assertIn('至少确认',business.gate(self.c,self.p,'验证')[0])
         self.entity('opportunity',name='方向',audience='目标客户',problem='需求',source='访谈来源',validation='兴趣测试',decision='确认验证')
